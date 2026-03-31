@@ -122,7 +122,10 @@ export default function GiftTable({
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
-            전체 {items.length}
+            전체
+            <span className="ml-1.5 inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-500 text-white text-[10px] font-bold">
+              {items.length}
+            </span>
           </button>
           {priceTiers.map(([tier, count]) => (
             <button
@@ -136,7 +139,14 @@ export default function GiftTable({
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
-              {tier === 0 ? '1만원 미만' : `${tier}만원대`} {count}
+              {tier === 0 ? '1만원 미만' : `${tier}만원대`}
+              <span className={`ml-1.5 inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold ${
+                priceFilter === tier
+                  ? 'bg-white text-blue-600'
+                  : 'bg-gray-500 text-white'
+              }`}>
+                {count}
+              </span>
             </button>
           ))}
         </div>
