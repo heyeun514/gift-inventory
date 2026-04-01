@@ -51,6 +51,71 @@ export function updateDocPaths(
   }
 }
 
+export function deleteItems(ids: string[]): number {
+  const items = readInventory();
+  const idSet = new Set(ids);
+  let deleted = 0;
+
+  const trashDir = path.join(process.cwd(), 'data', 'receipts', '.trash');
+  if (!fs.existsSync(trashDir)) fs.mkdirSync(trashDir, { recursive: true });
+
+  const remaining = items.filter((item) => {
+    if (!idSet.has(item.id)) return true;
+
+    for (const p of [item.orderSheetPath, item.receiptPath]) {
+      if (p) {
+        const filePath = path.join(process.cwd(), 'data', p);
+        if (fs.existsSync(filePath)) {
+          const dest = path.join(trashDir, path.basename(filePath));
+          try { fs.renameSync(filePath, dest); } catch { /* ignore */ }
+        }
+      }
+    }
+    deleted++;
+    return false;
+  });
+
+  writeInventory(remaining);
+  return deleted;
+}
+
+export function deleteReceipts(id: string): boolean {
+  const items = readInventory();
+  const item = items.find((i) => i.id === id);
+  if (!item) return false;
+
+  const trashDir = path.join(process.cwd(), 'data', 'receipts', '.trash');
+  if (!fs.existsSync(trashDir)) fs.mkdirSync(trashDir, { recursive: true });
+
+  for (const p of [item.orderSheetPath, item.receiptPath]) {
+    if (p) {
+      const filePath = path.join(process.cwd(), 'data', p);
+      if (fs.existsSync(filePath)) {
+        const dest = path.join(trashDir, path.basename(filePath));
+        try { fs.renameSync(filePath, dest); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  item.orderSheetPath = undefined;
+  item.receiptPath = undefined;
+  writeInventory(items);
+  return true;
+}
+
+export function updateItem(
+  id: string,
+  updates: { price?: number; quantity?: number },
+): boolean {
+  const items = readInventory();
+  const item = items.find((i) => i.id === id);
+  if (!item) return false;
+  if (updates.price !== undefined) item.price = updates.price;
+  if (updates.quantity !== undefined) item.quantity = updates.quantity;
+  writeInventory(items);
+  return true;
+}
+
 export function giveItems(
   id: string,
   recipients: { name: string; qty: number }[],

@@ -26,12 +26,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { TwentyNineCmScraper } = await import('@/lib/scraper/29cm');
     let scraper;
     switch (mall || '29CM') {
-      case '29CM':
+      case '29CM': {
+        const { TwentyNineCmScraper } = await import('@/lib/scraper/29cm');
         scraper = new TwentyNineCmScraper();
         break;
+      }
+      case 'NAVER': {
+        const { NaverScraper } = await import('@/lib/scraper/naver');
+        scraper = new NaverScraper();
+        break;
+      }
       default:
         return NextResponse.json(
           { error: `지원하지 않는 쇼핑몰: ${mall}` },

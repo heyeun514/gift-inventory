@@ -9,9 +9,12 @@ import GiveModal from '@/components/GiveModal';
 import ResetModal from '@/components/ResetModal';
 
 type SessionStatus = 'idle' | 'waiting_login' | 'logged_in' | 'busy';
+type MallType = '29CM' | 'NAVER';
 
 export default function AdminPage() {
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('idle');
+  const [sessionMall, setSessionMall] = useState<MallType | null>(null);
+  const [selectedMall, setSelectedMall] = useState<MallType>('29CM');
   const [sessionLoading, setSessionLoading] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -31,6 +34,7 @@ export default function AdminPage() {
         const res = await fetch('/api/session/status');
         const data = await res.json();
         setSessionStatus(data.status);
+        if (data.mall) setSessionMall(data.mall);
       } catch { /* ignore */ }
     };
     poll();
@@ -42,9 +46,14 @@ export default function AdminPage() {
     setSessionLoading(true);
     setMessage(null);
     try {
-      const res = await fetch('/api/session/start', { method: 'POST' });
+      const res = await fetch('/api/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mall: selectedMall }),
+      });
       const data = await res.json();
       setSessionStatus(data.status);
+      setSessionMall(selectedMall);
       if (data.status === 'logged_in') {
         setMessage({ type: 'success', text: '로그인 완료!' });
       }
@@ -58,6 +67,7 @@ export default function AdminPage() {
   const handleCloseSession = async () => {
     await fetch('/api/session/close', { method: 'POST' });
     setSessionStatus('idle');
+    setSessionMall(null);
     setMessage({ type: 'success', text: '세션이 종료되었습니다.' });
   };
 
@@ -80,7 +90,7 @@ export default function AdminPage() {
       const res = await fetch('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate, endDate, mall: '29CM' }),
+        body: JSON.stringify({ startDate, endDate, mall: sessionMall }),
       });
       const data = await res.json();
       if (!res.ok) { setMessage({ type: 'error', text: data.error }); return; }
@@ -172,6 +182,26 @@ export default function AdminPage() {
     }
   };
 
+  const handleDeleteMultiple = async (ids: string[]) => {
+    try {
+      const res = await fetch('/api/inventory/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({ type: 'success', text: `${data.deleted}개 삭제되었습니다.` });
+        await fetchInventory();
+      } else {
+        const data = await res.json();
+        setMessage({ type: 'error', text: data.error });
+      }
+    } catch {
+      setMessage({ type: 'error', text: '삭제에 실패했습니다.' });
+    }
+  };
+
   const handleReset = async () => {
     setShowResetModal(false);
     try {
@@ -224,17 +254,27 @@ export default function AdminPage() {
                 className={`w-2.5 h-2.5 rounded-full ${sessionStatusLabel[sessionStatus].color}`}
               />
               <span className="text-sm text-gray-600">
-                {sessionStatusLabel[sessionStatus].text}
+                {sessionMall ? `${sessionMall} ` : ''}{sessionStatusLabel[sessionStatus].text}
               </span>
             </div>
             {sessionStatus === 'idle' ? (
-              <button
-                onClick={handleStartSession}
-                disabled={sessionLoading}
-                className="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700 disabled:bg-gray-400"
-              >
-                {sessionLoading ? '연결 중...' : '29CM 로그인'}
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedMall}
+                  onChange={(e) => setSelectedMall(e.target.value as MallType)}
+                  className="border border-gray-300 rounded-md px-3 py-2 text-sm"
+                >
+                  <option value="29CM">29CM</option>
+                  <option value="NAVER">네이버 스토어</option>
+                </select>
+                <button
+                  onClick={handleStartSession}
+                  disabled={sessionLoading}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700 disabled:bg-gray-400"
+                >
+                  {sessionLoading ? '연결 중...' : '로그인'}
+                </button>
+              </div>
             ) : (
               <button
                 onClick={handleCloseSession}
@@ -326,7 +366,33 @@ export default function AdminPage() {
               title="보유한 선물 리스트"
               items={availableItems}
               showGiveButton
+              showDeleteButton
+              editable
               onGive={(id) => setGiveTargetId(id)}
+              onDeleteMultiple={handleDeleteMultiple}
+              onUpdate={async (id, updates) => {
+                try {
+                  await fetch('/api/inventory/update', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id, ...updates }),
+                  });
+                  await fetchInventory();
+                } catch { /* ignore */ }
+              }}
+              onDeleteReceipts={async (id) => {
+                try {
+                  const res = await fetch('/api/receipts/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id }),
+                  });
+                  if (res.ok) {
+                    setMessage({ type: 'success', text: '증빙서류가 삭제되었습니다.' });
+                    await fetchInventory();
+                  }
+                } catch { /* ignore */ }
+              }}
             />
           ) : (
             <GiftTable title="제공한 선물 리스트" items={givenItems} />

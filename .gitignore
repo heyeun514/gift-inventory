@@ -33,6 +33,9 @@ yarn-error.log*
 # env files
 .env*
 
+# receipts trash
+data/receipts/.trash/
+
 # Playwright browsers
 /node_modules/.cache
 

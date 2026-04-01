@@ -7,7 +7,12 @@ interface GiftTableProps {
   title: string;
   items: GiftItem[];
   showGiveButton?: boolean;
+  showDeleteButton?: boolean;
+  editable?: boolean;
   onGive?: (id: string) => void;
+  onDeleteMultiple?: (ids: string[]) => void;
+  onUpdate?: (id: string, updates: { price?: number; quantity?: number }) => void;
+  onDeleteReceipts?: (id: string) => void;
 }
 
 type SortKey = 'orderDate' | 'price';
@@ -45,11 +50,34 @@ export default function GiftTable({
   title,
   items,
   showGiveButton,
+  showDeleteButton,
+  editable,
   onGive,
+  onDeleteMultiple,
+  onUpdate,
+  onDeleteReceipts,
 }: GiftTableProps) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [priceFilter, setPriceFilter] = useState<number | null>(null); // null = 전체, 1 = 1만원대, 2 = 2만원대...
+  const [priceFilter, setPriceFilter] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === sortedItems.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(sortedItems.map((i) => i.id)));
+    }
+  }; // null = 전체, 1 = 1만원대, 2 = 2만원대...
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -106,11 +134,49 @@ export default function GiftTable({
         <h2 className="text-lg font-semibold">
           {title} ({filteredItems.length}개{priceFilter !== null ? ` / 전체 ${items.length}개` : ''})
         </h2>
-        {filteredItems.length > 0 && (
-          <span className="text-sm text-gray-500">
-            합계 {totalPrice.toLocaleString()}원
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {selectedIds.size > 0 && (
+            <button
+              onClick={async () => {
+                const res = await fetch('/api/receipts/download', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ ids: Array.from(selectedIds) }),
+                });
+                if (res.ok) {
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `증빙서류_${new Date().toISOString().split('T')[0]}.zip`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }
+              }}
+              className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+            >
+              증빙 다운로드 ({selectedIds.size})
+            </button>
+          )}
+          {showDeleteButton && selectedIds.size > 0 && (
+            <button
+              onClick={() => {
+                if (confirm(`선택한 ${selectedIds.size}개 항목을 삭제하시겠습니까?`)) {
+                  onDeleteMultiple?.(Array.from(selectedIds));
+                  setSelectedIds(new Set());
+                }
+              }}
+              className="text-red-500 hover:text-red-700 text-sm font-medium"
+            >
+              선택 삭제 ({selectedIds.size})
+            </button>
+          )}
+          {filteredItems.length > 0 && (
+            <span className="text-sm text-gray-500">
+              합계 {totalPrice.toLocaleString()}원
+            </span>
+          )}
+        </div>
       </div>
       {items.length > 0 && priceTiers.length > 1 && (
         <div className="flex flex-wrap gap-2 mb-4">
@@ -160,6 +226,14 @@ export default function GiftTable({
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
+                <th className="px-3 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={sortedItems.length > 0 && selectedIds.size === sortedItems.length}
+                    onChange={toggleSelectAll}
+                    className="rounded"
+                  />
+                </th>
                 <th className="px-4 py-3 text-left">이미지</th>
                 <th className="px-4 py-3 text-left">상품명</th>
                 <th className="px-4 py-3 text-left">구매처</th>
@@ -198,7 +272,15 @@ export default function GiftTable({
             </thead>
             <tbody className="divide-y divide-gray-200">
               {sortedItems.map((item) => (
-                <tr key={item.id} className="hover:bg-gray-50">
+                <tr key={item.id} className={`hover:bg-gray-50 ${selectedIds.has(item.id) ? 'bg-blue-50' : ''}`}>
+                  <td className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(item.id)}
+                      onChange={() => toggleSelect(item.id)}
+                      className="rounded"
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     {item.imageUrl ? (
                       <img
@@ -215,11 +297,44 @@ export default function GiftTable({
                   <td className="px-4 py-3 font-medium">{item.itemName}</td>
                   <td className="px-4 py-3 text-gray-600">{item.mall}</td>
                   <td className="px-4 py-3 text-center text-gray-600">
-                    {item.quantity ?? 1}
+                    {editingId === item.id ? (
+                      <input
+                        type="number"
+                        min={1}
+                        defaultValue={item.quantity ?? 1}
+                        onBlur={(e) => {
+                          const newQty = parseInt(e.target.value) || 1;
+                          if (newQty !== (item.quantity ?? 1)) {
+                            const totalPrice = item.price * (item.quantity ?? 1);
+                            const newUnitPrice = Math.round(totalPrice / newQty);
+                            onUpdate?.(item.id, { quantity: newQty, price: newUnitPrice });
+                          }
+                        }}
+                        className="w-14 text-center border border-blue-400 rounded px-1 py-0.5 text-sm"
+                        autoFocus
+                      />
+                    ) : (
+                      item.quantity ?? 1
+                    )}
                   </td>
                   <td className="px-4 py-3 text-gray-600">{item.orderDate}</td>
                   <td className="px-4 py-3 text-right">
-                    {item.price.toLocaleString()}원
+                    {editingId === item.id ? (
+                      <input
+                        type="number"
+                        min={0}
+                        defaultValue={item.price}
+                        onBlur={(e) => {
+                          const newPrice = parseInt(e.target.value) || 0;
+                          if (newPrice !== item.price) {
+                            onUpdate?.(item.id, { price: newPrice });
+                          }
+                        }}
+                        className="w-24 text-right border border-blue-400 rounded px-1 py-0.5 text-sm"
+                      />
+                    ) : (
+                      `${item.price.toLocaleString()}원`
+                    )}
                   </td>
                   <td className="px-4 py-3 text-center">
                     <div className="flex gap-2 justify-center">
@@ -245,6 +360,19 @@ export default function GiftTable({
                           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v.5"/><path d="M12 6v.5"/></svg>
                         </a>
                       ) : null}
+                      {(item.orderSheetPath || item.receiptPath) && onDeleteReceipts && (
+                        <button
+                          onClick={() => {
+                            if (confirm('이 항목의 증빙서류를 삭제하시겠습니까?')) {
+                              onDeleteReceipts(item.id);
+                            }
+                          }}
+                          title="증빙 삭제"
+                          className="text-gray-300 hover:text-red-500"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
+                      )}
                       {!item.orderSheetPath && !item.receiptPath && (
                         <span className="text-gray-300">
                           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
@@ -254,13 +382,34 @@ export default function GiftTable({
                   </td>
                   {showGiveButton && (
                     <td className="px-4 py-3 text-center">
-                      <button
-                        onClick={() => onGive?.(item.id)}
-                        title="선물하기"
-                        className="text-pink-500 hover:text-pink-700"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
-                      </button>
+                      <div className="flex gap-2 justify-center">
+                        <button
+                          onClick={() => onGive?.(item.id)}
+                          title="선물하기"
+                          className="text-pink-500 hover:text-pink-700"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
+                        </button>
+                        {editable && (
+                          editingId === item.id ? (
+                            <button
+                              onClick={() => setEditingId(null)}
+                              title="편집 완료"
+                              className="text-green-500 hover:text-green-700"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setEditingId(item.id)}
+                              title="수정"
+                              className="text-gray-400 hover:text-blue-500"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                          )
+                        )}
+                      </div>
                     </td>
                   )}
                   {!showGiveButton && (
