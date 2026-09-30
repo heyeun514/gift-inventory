@@ -11,7 +11,10 @@ export class TwentyNineCmScraper implements ScraperModule {
   async scrape(startDate: string, endDate: string): Promise<GiftItem[]> {
     return enqueueTask(async (page: Page) => {
       await page.goto(ORDER_LIST_URL, { waitUntil: 'networkidle' });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
+
+      // 기간 필터 선택 시도
+      await selectPeriodFilter(page);
 
       const allItems: GiftItem[] = [];
 
@@ -19,33 +22,51 @@ export class TwentyNineCmScraper implements ScraperModule {
         const pageItems = await scrapeOrderPage(page);
         allItems.push(...pageItems);
 
-        const lastItem = pageItems[pageItems.length - 1];
-        if (lastItem && lastItem.orderDate < startDate) break;
+        // 유효한 날짜 항목 기준으로 종료 판단
+        const validItems = pageItems.filter((item) => item.orderDate);
+        const lastValidItem = validItems[validItems.length - 1];
+        if (
+          lastValidItem &&
+          lastValidItem.orderDate &&
+          lastValidItem.orderDate < startDate
+        )
+          break;
 
-        // 다음 페이지 탐색
-        const paginationButtons = await page.$$eval('button', (btns) =>
+        // 다음 페이지 이동
+        const paginationButtons = await page.$$eval('button, a', (btns) =>
           btns
             .filter((b) => /^\d+$/.test(b.textContent?.trim() || ''))
             .map((b) => ({
               text: b.textContent?.trim() || '',
               isCurrent:
-                b.getAttribute('aria-current') === 'page' || b.disabled,
+                b.getAttribute('aria-current') === 'page' ||
+                b.getAttribute('aria-current') === 'true' ||
+                b.classList.contains('active') ||
+                (b as HTMLButtonElement).disabled,
             })),
         );
 
         const currentBtn = paginationButtons.find((b) => b.isCurrent);
         const nextBtn = currentBtn
           ? paginationButtons.find(
-              (b) =>
-                !b.isCurrent && Number(b.text) > Number(currentBtn.text),
+              (b) => !b.isCurrent && Number(b.text) > Number(currentBtn.text),
             )
           : null;
 
         if (!nextBtn) break;
 
-        await page.click(`button:has-text("${nextBtn.text}")`);
-        await page.waitForTimeout(2000);
-        await page.waitForLoadState('networkidle');
+        const nextEl = page
+          .locator(
+            `button:has-text("${nextBtn.text}"), a:has-text("${nextBtn.text}")`,
+          )
+          .first();
+        if (await nextEl.isVisible().catch(() => false)) {
+          await nextEl.click();
+          await page.waitForTimeout(2500);
+          await page.waitForLoadState('networkidle').catch(() => {});
+        } else {
+          break;
+        }
       }
 
       return allItems.filter(
@@ -57,18 +78,6 @@ export class TwentyNineCmScraper implements ScraperModule {
 
 async function scrapeOrderPage(page: Page): Promise<GiftItem[]> {
   return await page.evaluate(() => {
-    const items: {
-      id: string;
-      mall: string;
-      orderDate: string;
-      itemName: string;
-      price: number;
-      quantity: number;
-      imageUrl?: string;
-      status: 'AVAILABLE';
-      detailUrl?: string;
-    }[] = [];
-
     function parseDateText(dateText: string): string {
       const match = dateText.match(/(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})/);
       if (!match) return '';
@@ -83,74 +92,133 @@ async function scrapeOrderPage(page: Page): Promise<GiftItem[]> {
     }
 
     function parseQuantity(text: string): number {
-      const match = text.match(/수량\s*(\d+)/);
+      const match = text.match(/수량\s*(\d+)개?/);
       return match ? parseInt(match[1], 10) : 1;
     }
 
-    let orderLis = document.querySelectorAll('ol > li.e1koz66l0');
-    if (orderLis.length === 0) {
-      orderLis = document.querySelectorAll(
-        'ol > li:has(a[href*="/order/my-order/detail/"])',
-      );
-    }
+    // 1. 주문 상세 페이지 링크들 탐색
+    const detailLinks = Array.from(
+      document.querySelectorAll('a[href*="/order/my-order/detail/"]'),
+    ) as HTMLAnchorElement[];
 
-    for (const orderLi of orderLis) {
-      const dateEl = orderLi.querySelector(
-        '.flex.items-center.gap-4 span:nth-child(2)',
-      );
-      const orderDate = parseDateText(dateEl?.textContent?.trim() || '');
+    // 2. 주문번호별 카드 그룹화 (중복 방지 및 상위 카드 추출)
+    const orderGroups = new Map<
+      string,
+      { orderNum: string; detailHref: string; card: Element }
+    >();
 
-      const detailLink = orderLi.querySelector(
-        'a[href*="/order/my-order/detail/"]',
-      ) as HTMLAnchorElement | null;
-      const detailHref = detailLink?.href || '';
-      const orderNumber = detailHref.match(/detail\/(\d+)/)?.[1] || '';
+    detailLinks.forEach((link) => {
+      const href = link.href || link.getAttribute('href') || '';
+      const orderNum = href.match(/detail\/(\d+)/)?.[1];
+      if (!orderNum) return;
 
-      const productImgs = orderLi.querySelectorAll(
-        'img.h-full.w-full.object-contain',
+      let card: Element | null = link.parentElement;
+      for (let i = 0; i < 8 && card; i++) {
+        const tag = card.tagName;
+        const cls = (card.className || '').toString();
+        if (
+          tag === 'LI' ||
+          tag === 'ARTICLE' ||
+          tag === 'SECTION' ||
+          cls.includes('e1koz66l0')
+        )
+          break;
+        card = card.parentElement;
+      }
+      if (!card)
+        card = link.parentElement ? link.parentElement.parentElement || link : link;
+
+      if (!orderGroups.has(orderNum)) {
+        orderGroups.set(orderNum, { orderNum, detailHref: href, card });
+      }
+    });
+
+    const resultItems: {
+      id: string;
+      mall: string;
+      orderDate: string;
+      itemName: string;
+      price: number;
+      quantity: number;
+      imageUrl?: string;
+      status: 'AVAILABLE';
+      detailUrl: string;
+    }[] = [];
+
+    // 3. 각 주문 카드별 상품 데이터 파싱
+    orderGroups.forEach(({ orderNum, detailHref, card }) => {
+      const cardText = card.textContent || '';
+      const orderDate = parseDateText(cardText);
+
+      // 주문 카드 내 상품 이미지들
+      const productImgs = Array.from(card.querySelectorAll('img')).filter(
+        (img) => {
+          const alt = (img.getAttribute('alt') || '').trim();
+          const src = (img.getAttribute('src') || '').trim();
+          return (
+            alt.length > 0 &&
+            alt !== '29CM' &&
+            !alt.includes('프로필') &&
+            !alt.includes('로고') &&
+            (src.includes('29cm') ||
+              src.includes('item') ||
+              src.includes('next-product'))
+          );
+        },
       );
 
       let productIdx = 0;
-      for (const img of productImgs) {
-        const itemName = img.getAttribute('alt') || '';
-        const imageUrl = img.getAttribute('src') || '';
-        if (!itemName) continue;
+      productImgs.forEach((img) => {
+        const itemName = (img.getAttribute('alt') || '').trim();
+        const imageUrl = (img.getAttribute('src') || '').trim();
 
-        // 상품별 취소 상태 확인
-        let productContainer: Element | null | undefined =
-          img.parentElement?.parentElement;
-        let searchEl: Element | null = img;
-        for (let d = 0; d < 5 && searchEl; d++) {
-          searchEl = searchEl.parentElement;
-          if (!searchEl) break;
-          const tag = searchEl.tagName;
-          const cls = (searchEl as HTMLElement).className?.toString() || '';
-          if ((tag === 'A' && cls.includes('flex-1')) || tag === 'LI') {
-            productContainer = searchEl;
+        // img 상위 상품 박스 찾기
+        let productBox: Element | null = img.parentElement;
+        for (let i = 0; i < 5 && productBox; i++) {
+          const text = productBox.textContent || '';
+          if (
+            text.includes('원') &&
+            (text.includes('수량') || text.includes('개') || text.includes('배송'))
+          )
             break;
-          }
+          productBox = productBox.parentElement;
         }
 
-        const containerText = productContainer?.textContent || '';
-        if (containerText.includes('취소완료')) continue;
+        const boxText = productBox ? productBox.textContent || '' : cardText;
+        if (boxText.includes('취소완료')) return;
 
-        const brandEl = productContainer?.querySelector(
-          'p.text-s-bold.text-primary',
-        );
-        const brandName = brandEl?.textContent?.trim() || '';
-        const priceEl = productContainer?.querySelector(
-          'p.mt-4.text-m.text-secondary',
-        );
-        const priceText = priceEl?.textContent?.trim() || '0';
+        // 리프(Leaf) 가격 전용 요소 탐색 (자식 요소가 없는 순수 가격 텍스트 노드에서 가격 파싱)
+        let priceText = '';
+        if (productBox) {
+          const allLeaves = Array.from(
+            productBox.querySelectorAll('p, span, div'),
+          ).filter(
+            (el) =>
+              el.children.length === 0 && (el.textContent || '').includes('원'),
+          );
+          const priceLeaf =
+            allLeaves.find((el) => (el.textContent || '').includes('수량')) ||
+            allLeaves[allLeaves.length - 1];
+          if (priceLeaf) priceText = priceLeaf.textContent || '';
+        }
+        if (!priceText) priceText = boxText;
+
         const totalPrice = parsePriceText(priceText);
         const quantity = parseQuantity(priceText);
-        const price = quantity > 1 ? Math.round(totalPrice / quantity) : totalPrice;
+        const price =
+          quantity > 1 ? Math.round(totalPrice / quantity) : totalPrice;
 
-        const id = `29CM_${orderNumber}_${productIdx}`;
-        productIdx++;
+        // 브랜드 추출
+        let brandName = '';
+        if (productBox) {
+          const brandP = productBox.querySelector(
+            'p.text-s-bold, p.text-primary, span.brand, .brand',
+          );
+          if (brandP) brandName = brandP.textContent?.trim() || '';
+        }
 
-        items.push({
-          id,
+        resultItems.push({
+          id: `29CM_${orderNum}_${productIdx++}`,
           mall: '29CM',
           orderDate,
           itemName: brandName ? `[${brandName}] ${itemName}` : itemName,
@@ -158,11 +226,44 @@ async function scrapeOrderPage(page: Page): Promise<GiftItem[]> {
           quantity,
           imageUrl: imageUrl || undefined,
           status: 'AVAILABLE',
-          detailUrl: detailHref || undefined,
+          detailUrl: detailHref,
         });
+      });
+    });
+
+    return resultItems;
+  }) as GiftItem[];
+}
+
+async function selectPeriodFilter(page: Page): Promise<void> {
+  try {
+    await page.waitForTimeout(2000);
+
+    const dropdownButton = page
+      .locator('button')
+      .filter({ hasText: /최근|개월|년/ })
+      .first();
+
+    if (await dropdownButton.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await dropdownButton.click();
+      await page.waitForTimeout(1000);
+
+      const oneYearOption = page
+        .locator('button, li, div, a, [role="option"]')
+        .filter({ hasText: /^1년$|^최근\s*1년$/ })
+        .first();
+
+      if (await oneYearOption.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await oneYearOption.click();
+        console.log('[29CM Scraper] "1년" 옵션을 클릭했습니다.');
+        await page.waitForTimeout(3000);
+        await page.waitForLoadState('networkidle').catch(() => {});
+        return;
       }
     }
 
-    return items;
-  }) as GiftItem[];
+    console.log('[29CM Scraper] 기간 드롭다운 미선택 (기본 조회 상태로 진행)');
+  } catch (error) {
+    console.warn('[29CM Scraper] 기간 선택 중 오류:', error);
+  }
 }
